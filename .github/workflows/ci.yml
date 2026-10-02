@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  config:
+    name: Monitoring & Kubernetes config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: promtool check rules + alert unit tests
+        run: |
+          docker run --rm -v "$PWD/monitoring:/m" --entrypoint promtool prom/prometheus:v2.55.0 \
+            check rules /m/prometheus/rules/recording.yml /m/prometheus/rules/alerts.yml
+          docker run --rm -v "$PWD/monitoring:/m" -w /m/prometheus/tests --entrypoint promtool \
+            prom/prometheus:v2.55.0 test rules alerts_test.yml
+      - name: amtool check-config
+        run: |
+          docker run --rm -v "$PWD/monitoring:/m" --entrypoint amtool prom/alertmanager:v0.27.0 \
+            check-config /m/alertmanager/alertmanager.yml
+      - name: kustomize build + kubeconform
+        run: |
+          curl -sSfL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz | tar xz
+          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
+          ./kustomize build . > manifests.yaml
+          ./kubeconform -strict -summary -kubernetes-version 1.31.0 manifests.yaml
+
+  compose:
+    name: Docker Compose - calls, failover, metrics
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start the lab
+        run: docker compose up -d --build --wait asterisk-1 asterisk-2 kamailio prometheus
+      - name: Load test (20 cps, 400 calls)
+        run: docker compose run --rm -e RATE=20 -e CALLS=400 sipp
+      - name: Calls were spread over both Asterisk servers
+        run: |
+          for port in 8088 8089; do
+            calls=$(curl -s localhost:$port/metrics | awk '/^asterisk_calls_sum/ {print $2}')
+            echo "asterisk on :$port handled $calls calls"
+            [ "${calls%.*}" -gt 100 ]
+          done
+      - name: Rolling restart under load - no call may fail
+        run: |
+          docker compose run --rm -e RATE=20 -e CALLS=600 sipp > rolling.log 2>&1 &
+          load=$!
+          sleep 8
+          ./scripts/rolling-restart.sh
+          wait $load; rc=$?
+          cat rolling.log
+          exit $rc
+      - name: Crash - with asterisk-1 dead, new calls must fail over
+        run: |
+          docker compose kill asterisk-1
+          docker compose run --rm -e RATE=10 -e CALLS=150 sipp
+          curl -s localhost:9090/metrics | grep '^kamailio_sip_failover_total'
+      - name: Prometheus computes the KPIs
+        run: |
+          sleep 20
+          for rule in dest:voip_asr:ratio_rate5m dest:voip_pdd_seconds:p95_5m; do
+            n=$(curl -s "localhost:9091/api/v1/query?query=$rule" | python3 -c 'import sys, json; print(len(json.load(sys.stdin)["data"]["result"]))')
+            echo "$rule: $n series"
+            [ "$n" -gt 0 ]
+          done
+      - name: Logs
+        if: failure()
+        run: docker compose logs --tail 80 kamailio asterisk-1 asterisk-2
+      - name: Stop
+        if: always()
+        run: docker compose down -v
+
+  kubernetes:
+    name: Kubernetes (kind) - deploy and load test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build images
+        run: |
+          for c in asterisk kamailio sipp; do docker build -t voip-lab-$c:ci $c; done
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: voip-lab
+          config: kind-config.yaml
+      - name: Load images and deploy
+        run: |
+          for c in asterisk kamailio sipp; do kind load docker-image voip-lab-$c:ci --name voip-lab; done
+          curl -sSfL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz | tar xz
+          ./kustomize edit set image voip-lab-asterisk=voip-lab-asterisk:ci voip-lab-kamailio=voip-lab-kamailio:ci voip-lab-sipp=voip-lab-sipp:ci
+          ./kustomize build . | kubectl apply -f -
+          kubectl -n voip-lab rollout status statefulset/asterisk --timeout=10m
+          kubectl -n voip-lab rollout status deployment/kamailio --timeout=5m
+          kubectl -n voip-lab rollout status deployment/prometheus --timeout=5m
+      - name: SIPp load test job
+        run: |
+          kubectl -n voip-lab create job --from=cronjob/sipp-load-test sipp-ci
+          for i in $(seq 1 60); do
+            state=$(kubectl -n voip-lab get job sipp-ci -o jsonpath='{.status.succeeded}{.status.failed}')
+            [ -n "$state" ] && break
+            sleep 5
+          done
+          kubectl -n voip-lab logs job/sipp-ci
+          [ "$(kubectl -n voip-lab get job sipp-ci -o jsonpath='{.status.succeeded}')" = "1" ]
+      - name: Debug
+        if: failure()
+        run: |
+          kubectl -n voip-lab get pods -o wide
+          kubectl -n voip-lab describe pods | tail -60
+          kubectl -n voip-lab logs deploy/kamailio --tail=60 || true
+          kubectl -n voip-lab logs statefulset/asterisk --tail=40 || true
+
+  publish:
+    name: Publish images to GHCR
+    needs: [config, compose, kubernetes]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build & push
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for c in asterisk kamailio sipp; do
+            docker build -t ghcr.io/$OWNER/voip-lab-$c:${{ github.sha }} -t ghcr.io/$OWNER/voip-lab-$c:latest $c
+            docker push ghcr.io/$OWNER/voip-lab-$c:${{ github.sha }}
+            docker push ghcr.io/$OWNER/voip-lab-$c:latest
+          done

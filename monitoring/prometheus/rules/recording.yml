@@ -1,0 +1,28 @@
+groups:
+  - name: voip-kpis
+    rules:
+      # ASR: answered / attempts
+      - record: dest:voip_asr:ratio_rate5m
+        expr: |
+          sum by (dest) (rate(kamailio_sip_call_final_total{code="200"}[5m]))
+            / sum by (dest) (rate(kamailio_sip_call_final_total[5m]))
+
+      # NER: calls the network completed (answered or a user-side outcome)
+      - record: dest:voip_ner:ratio_rate5m
+        expr: |
+          sum by (dest) (rate(kamailio_sip_call_final_total{code=~"200|404|480|486|487|603"}[5m]))
+            / sum by (dest) (rate(kamailio_sip_call_final_total[5m]))
+
+      # ACD: average call duration
+      - record: dest:voip_acd_seconds:rate15m
+        expr: |
+          sum by (dest) (rate(kamailio_sip_call_duration_seconds_total[15m]))
+            / sum by (dest) (rate(kamailio_sip_calls_ended_total[15m]))
+
+      - record: dest:voip_pdd_seconds:p95_5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, dest) (rate(kamailio_sip_pdd_seconds_bucket[5m])))
+
+      - record: voip_calls_per_second:rate1m
+        expr: sum(rate(kamailio_sip_call_attempts_total[1m]))

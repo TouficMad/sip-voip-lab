@@ -1,0 +1,68 @@
+# Headless service: gives every Asterisk pod a stable DNS name for Kamailio
+apiVersion: v1
+kind: Service
+metadata:
+  name: asterisk
+  labels: {app: asterisk}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: {app: asterisk}
+  ports:
+    - {name: sip, port: 5060, protocol: UDP}
+    - {name: metrics, port: 8088, protocol: TCP}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: asterisk
+spec:
+  serviceName: asterisk
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: {app: asterisk}
+  template:
+    metadata:
+      labels: {app: asterisk}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8088"
+    spec:
+      # Rolling updates without dropping calls: on shutdown Asterisk refuses new
+      # calls (Kamailio retries them on another pod) and exits when its calls end.
+      terminationGracePeriodSeconds: 300
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10010
+        runAsGroup: 10010
+      containers:
+        - name: asterisk
+          image: voip-lab-asterisk
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: sip, containerPort: 5060, protocol: UDP}
+            - {name: metrics, containerPort: 8088, protocol: TCP}
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "asterisk -rx 'pjsip show transports' | grep -q transport-udp"]
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /metrics, port: metrics}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - |
+                    asterisk -rx "core stop gracefully" > /dev/null 2>&1
+                    while asterisk -rx "core show uptime" > /dev/null 2>&1; do sleep 1; done
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}

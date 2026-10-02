@@ -1,0 +1,40 @@
+# kubectl apply -k .
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: voip-lab
+
+resources:
+  - k8s/namespace.yaml
+  - k8s/asterisk.yaml
+  - k8s/kamailio.yaml
+  - k8s/monitoring.yaml
+
+images:
+  - name: voip-lab-asterisk
+    newName: ghcr.io/touficmad/voip-lab-asterisk
+    newTag: latest
+  - name: voip-lab-kamailio
+    newName: ghcr.io/touficmad/voip-lab-kamailio
+    newTag: latest
+  - name: voip-lab-sipp
+    newName: ghcr.io/touficmad/voip-lab-sipp
+    newTag: latest
+
+configMapGenerator:
+  - name: kamailio-dispatcher
+    files:
+      - dispatcher.list=k8s/dispatcher.list
+  - name: prometheus-config
+    files:
+      - prometheus.yml=monitoring/prometheus/prometheus-k8s.yml
+      - monitoring/prometheus/rules/recording.yml
+      - monitoring/prometheus/rules/alerts.yml
+  - name: grafana-datasources
+    files:
+      - monitoring/grafana/provisioning/datasources/prometheus.yml
+  - name: grafana-dashboard-provider
+    files:
+      - monitoring/grafana/provisioning/dashboards/dashboards.yml
+  - name: grafana-dashboards
+    files:
+      - monitoring/grafana/dashboards/voip-lab.json

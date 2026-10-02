@@ -1,0 +1,3 @@
+# Asterisk pool: StatefulSet pods have stable DNS names
+1 sip:asterisk-0.asterisk.voip-lab.svc.cluster.local:5060
+1 sip:asterisk-1.asterisk.voip-lab.svc.cluster.local:5060

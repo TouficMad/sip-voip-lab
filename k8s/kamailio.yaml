@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kamailio
+  labels: {app: kamailio}
+spec:
+  replicas: 2   # Record-Route uses the pod IP, so each call stays on one proxy
+  selector:
+    matchLabels: {app: kamailio}
+  template:
+    metadata:
+      labels: {app: kamailio}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10011
+        runAsGroup: 10011
+      initContainers:
+        # Kamailio resolves the Asterisk names at startup: wait until DNS has them
+        - name: wait-for-asterisk-dns
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              for host in asterisk-0.asterisk asterisk-1.asterisk; do
+                until nslookup "$host.voip-lab.svc.cluster.local" > /dev/null 2>&1; do
+                  echo "waiting for $host"; sleep 2
+                done
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+      containers:
+        - name: kamailio
+          image: voip-lab-kamailio
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: sip, containerPort: 5060, protocol: UDP}
+            - {name: metrics, containerPort: 9090, protocol: TCP}
+          readinessProbe:
+            exec:
+              command: ["kamcmd", "-s", "unixs:/run/kamailio/kamailio_ctl", "core.uptime"]
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /health, port: metrics}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: dispatcher, mountPath: /etc/kamailio/dispatcher.list, subPath: dispatcher.list}
+            - {name: run, mountPath: /run/kamailio}
+      volumes:
+        - name: dispatcher
+          configMap: {name: kamailio-dispatcher}
+        - name: run
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kamailio
+  labels: {app: kamailio}
+spec:
+  type: NodePort
+  selector: {app: kamailio}
+  ports:
+    - {name: sip, port: 5060, targetPort: sip, protocol: UDP, nodePort: 30060}
+    - {name: metrics, port: 9090, targetPort: metrics, protocol: TCP}
+---
+# Load test: kubectl -n voip-lab create job --from=cronjob/sipp-load-test sipp-$(date +%s)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sipp-load-test
+spec:
+  schedule: "0 0 31 2 *"   # never on its own: run it on demand (see README)
+  suspend: true
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+          containers:
+            - name: sipp
+              image: voip-lab-sipp
+              imagePullPolicy: IfNotPresent
+              env:
+                - {name: TARGET, value: "kamailio.voip-lab.svc.cluster.local:5060"}
+                - {name: RATE, value: "20"}
+                - {name: CALLS, value: "600"}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: {drop: ["ALL"]}

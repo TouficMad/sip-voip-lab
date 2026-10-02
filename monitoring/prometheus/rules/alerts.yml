@@ -1,0 +1,64 @@
+groups:
+  - name: voip-lab
+    rules:
+      - alert: VoipMediaServerDown
+        expr: up{job="asterisk"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Asterisk {{ $labels.instance }} is down"
+          description: "Kamailio is failing calls over to the remaining media servers."
+
+      - alert: VoipEdgeProxyDown
+        expr: up{job="kamailio"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Kamailio edge proxy is down. No calls can be placed"
+
+      - alert: VoipNoMediaServerAvailable
+        expr: increase(kamailio_sip_call_final_total{code="503"}[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Calls to {{ $labels.dest }} rejected with 503"
+          description: "Kamailio had no healthy Asterisk to send calls to."
+
+      - alert: VoipFailovers
+        expr: sum(rate(kamailio_sip_failover_total[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Calls are failing over between media servers"
+          description: "{{ $value | humanize }} failovers/s. A media server is slow or refusing calls."
+
+      - alert: VoipLowASR
+        expr: |
+          dest:voip_asr:ratio_rate5m < 0.30
+            and on (dest) sum by (dest) (rate(kamailio_sip_call_attempts_total[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low ASR to {{ $labels.dest }}"
+          description: "Only {{ $value | humanizePercentage }} of calls are answered."
+
+      - alert: VoipHighPDD
+        expr: dest:voip_pdd_seconds:p95_5m > 6
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High post-dial delay to {{ $labels.dest }}"
+          description: "p95 PDD is {{ $value | humanize }}s."
+
+      - alert: VoipSipFlood
+        expr: increase(kamailio_sip_blocked_total{reason="flood"}[5m]) > 100
+        labels:
+          severity: warning
+        annotations:
+          summary: "SIP flood blocked by Kamailio"
+          description: "{{ $value | humanize }} requests dropped by pike in 5 minutes. Possible scanning or toll-fraud attempt."

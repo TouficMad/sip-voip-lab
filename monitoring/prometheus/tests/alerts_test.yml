@@ -1,0 +1,64 @@
+# promtool test rules monitoring/prometheus/tests/alerts_test.yml
+rule_files:
+  - ../rules/recording.yml
+  - ../rules/alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      # UAE: 60 attempts/min, only 12 answered -> ASR 20%
+      - series: 'kamailio_sip_call_attempts_total{dest="uae"}'
+        values: "0+60x20"
+      - series: 'kamailio_sip_call_final_total{dest="uae",code="200"}'
+        values: "0+12x20"
+      - series: 'kamailio_sip_call_final_total{dest="uae",code="486"}'
+        values: "0+48x20"
+      # UK healthy: 65%
+      - series: 'kamailio_sip_call_attempts_total{dest="uk"}'
+        values: "0+100x20"
+      - series: 'kamailio_sip_call_final_total{dest="uk",code="200"}'
+        values: "0+65x20"
+      - series: 'kamailio_sip_call_final_total{dest="uk",code="486"}'
+        values: "0+35x20"
+      - series: 'up{job="asterisk",instance="asterisk-1:8088"}'
+        values: "1 1 0 0 0 0 0 0 0 0"
+      - series: 'up{job="asterisk",instance="asterisk-2:8088"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: VoipLowASR
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              dest: uae
+            exp_annotations:
+              summary: "Low ASR to uae"
+              description: "Only 20% of calls are answered."
+      - eval_time: 5m
+        alertname: VoipMediaServerDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: asterisk
+              instance: asterisk-1:8088
+            exp_annotations:
+              summary: "Asterisk asterisk-1:8088 is down"
+              description: "Kamailio is failing calls over to the remaining media servers."
+
+  - interval: 1m
+    input_series:
+      - series: 'kamailio_sip_call_final_total{dest="uk",code="503"}'
+        values: "0 0 5 10"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: VoipNoMediaServerAvailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              dest: uk
+              code: "503"
+            exp_annotations:
+              summary: "Calls to uk rejected with 503"
+              description: "Kamailio had no healthy Asterisk to send calls to."

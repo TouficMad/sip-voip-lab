@@ -1,0 +1,77 @@
+x-asterisk: &asterisk
+  build: ./asterisk
+  image: voip-lab-asterisk:local
+  healthcheck:
+    test: ["CMD-SHELL", "asterisk -rx 'pjsip show transports' | grep -q transport-udp"]
+    interval: 5s
+    timeout: 3s
+    retries: 20
+
+services:
+  asterisk-1:
+    <<: *asterisk
+    hostname: asterisk-1
+    ports:
+      - "8088:8088"   # Prometheus metrics
+
+  asterisk-2:
+    <<: *asterisk
+    hostname: asterisk-2
+    ports:
+      - "8089:8088"
+
+  kamailio:
+    build: ./kamailio
+    image: voip-lab-kamailio:local
+    ports:
+      - "5060:5060/udp"   # point a softphone or SIPp here
+      - "9090:9090"       # Prometheus metrics: http://localhost:9090/metrics
+    healthcheck:
+      test: ["CMD", "kamcmd", "-s", "unixs:/run/kamailio/kamailio_ctl", "core.uptime"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      asterisk-1:
+        condition: service_healthy
+      asterisk-2:
+        condition: service_healthy
+
+  # docker compose run --rm sipp            (defaults: 300 calls at 10 cps)
+  # docker compose run --rm -e RATE=50 -e CALLS=3000 sipp
+  sipp:
+    build: ./sipp
+    image: voip-lab-sipp:local
+    profiles: ["loadtest"]
+    environment:
+      TARGET: kamailio:5060
+    depends_on:
+      kamailio:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
+    ports:
+      - "9091:9090"
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/voip-lab.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
