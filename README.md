@@ -64,7 +64,7 @@ docker compose run --rm -e RATE=50 -e CALLS=3000 sipp      # push harder
 
 ```bash
 # Zero-downtime maintenance: restart both Asterisk servers during a load test
-docker compose run --rm -e RATE=20 -e CALLS=600 sipp &
+docker compose run --rm --no-deps -e RATE=20 -e CALLS=600 sipp &
 ./scripts/rolling-restart.sh           # result: 600/600 calls succeed
 
 # Chaos: kill asterisk-1 without warning during a load test

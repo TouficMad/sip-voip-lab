@@ -15,8 +15,9 @@ kamailio_state() {
 
 for server in asterisk-1 asterisk-2; do
   echo "== $server: stop taking new calls, wait for active calls to end"
-  docker compose exec -T "$server" asterisk -rx "core stop gracefully" > /dev/null 2>&1 || true
   started=$(date +%s)
+  # returns once Asterisk has exited (or the connection drops)
+  docker compose exec -T "$server" asterisk -rx "core stop gracefully" > /dev/null 2>&1 || true
   while [ "$(docker compose ps -q --status running "$server")" != "" ]; do sleep 1; done
   echo "   stopped after $(( $(date +%s) - started ))s"
 

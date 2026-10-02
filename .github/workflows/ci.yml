@@ -40,7 +40,7 @@ jobs:
       - name: Build and start the lab
         run: docker compose up -d --build --wait asterisk-1 asterisk-2 kamailio prometheus
       - name: Load test (20 cps, 400 calls)
-        run: docker compose run --rm -e RATE=20 -e CALLS=400 sipp
+        run: docker compose run --rm --no-deps -e RATE=20 -e CALLS=400 sipp
       - name: Calls were spread over both Asterisk servers
         run: |
           for port in 8088 8089; do
@@ -50,7 +50,7 @@ jobs:
           done
       - name: Rolling restart under load - no call may fail
         run: |
-          docker compose run --rm -e RATE=20 -e CALLS=600 sipp > rolling.log 2>&1 &
+          docker compose run --rm --no-deps -e RATE=20 -e CALLS=600 sipp > rolling.log 2>&1 &
           load=$!
           sleep 8
           ./scripts/rolling-restart.sh
@@ -60,7 +60,7 @@ jobs:
       - name: Crash - with asterisk-1 dead, new calls must fail over
         run: |
           docker compose kill asterisk-1
-          docker compose run --rm -e RATE=10 -e CALLS=150 sipp
+          docker compose run --rm --no-deps -e RATE=10 -e CALLS=150 sipp
           curl -s localhost:9090/metrics | grep '^kamailio_sip_failover_total'
       - name: Prometheus computes the KPIs
         run: |

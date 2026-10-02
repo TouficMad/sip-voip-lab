@@ -7,7 +7,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-docker compose run --rm -e RATE=20 -e CALLS=600 sipp > crash-test.log 2>&1 &
+docker compose run --rm --no-deps -e RATE=20 -e CALLS=600 sipp > crash-test.log 2>&1 &
 load=$!
 sleep 10
 docker compose kill asterisk-1
