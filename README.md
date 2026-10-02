@@ -73,6 +73,8 @@ docker compose run --rm --no-deps -e RATE=20 -e CALLS=600 sipp &
 
 In the crash test, calls that were already connected to asterisk-1 are lost, because a crashed media server takes its calls with it. Every new call is failed over to asterisk-2. That difference is why the rolling restart drains servers first.
 
+> Lesson learned while building this: the first CI crash test failed because Docker gave the dead Asterisk's IP address to the next container that started, and Kamailio kept sending it calls. The compose network now gives SIP servers fixed addresses outside the range Docker assigns automatically.
+
 ### Call it from a softphone
 
 Point a SIP softphone (Linphone, Zoiper, MicroSIP) at `localhost:5060` over UDP, with no registration, and dial:
