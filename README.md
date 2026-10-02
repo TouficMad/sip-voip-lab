@@ -1,4 +1,4 @@
-# SIP / VoIP Lab on Kubernetes
+# SIP/ VoIP Lab on Kubernetes
 
 A carrier-style voice platform you can run on a laptop. **Kamailio** is the SIP edge proxy: it classifies calls by destination, load-balances them across a pool of **Asterisk** media servers, fails over when one breaks, and blocks floods. **SIPp** generates realistic call traffic. **Prometheus and Grafana** track the KPIs voice teams live by: ASR, NER, ACD and PDD. Everything runs on **Docker Compose** or **Kubernetes**.
 
